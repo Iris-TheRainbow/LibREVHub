@@ -1,24 +1,20 @@
 from ..Util import Directions
 
-class DcMotorInterface:
-    def __init__(self):
-        pass
-    
+class DcMotorSimple:
     def setPower(self, power: float) -> none:
         pass
     
     def setDirection(self, direction: int) -> none:
         pass
 
-class DcMotor(DcMotorInterface): 
-    def __init__(self, motorPort: int, nickname = "") -> DcMotor:
+class DcMotor(DcMotorSimple): 
+    def __init__(self, motorPort: int, nickname = ""):
         self.motorPort = motorPort
         self.nickname = nickname
     
     def setPower(self, power: float) -> none:
         pass
 
-    def setDirection(self, direction: int): 
+    def setDirection(self, direction: int) -> none: 
         pass
-    
-    def 
+

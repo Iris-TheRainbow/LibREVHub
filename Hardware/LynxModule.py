@@ -1,14 +1,11 @@
-from Comms import LynxCom
+from ..Coms import LynxCom
 from Hardware import *
 from Config.Nicknames import nicknames
 
 lynxModules: list[lynxModule] = None
 
-class NoParentModule(LynxModule):
-    pass
-
 class LynxModule:
-    def __init__(self, address: int, parentModule: LynxModule = NoParentModule()) -> LynxModule:
+    def __init__(self, address: int, parentModule: int) -> LynxModule:
         self.parentModule = parentModule
         self.address = address
         self.motors: list[Dcmotor] = [

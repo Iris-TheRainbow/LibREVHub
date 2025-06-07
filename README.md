@@ -1,4 +1,4 @@
-https://hackatime-badge.hackclub.com/U0796TP2RG8/LibREVHub
+![LibREVHub Dev time](https://hackatime-badge.hackclub.com/U0796TP2RG8/LibREVHub)
 
 
 # LibRevHub

@@ -2,8 +2,6 @@ from ..Coms import LynxCom
 from Hardware import *
 from Config.Nicknames import nicknames
 
-lynxModules: list[lynxModule] = None
-
 class LynxModule:
     def __init__(self, address: int, parentModule: int) -> LynxModule:
         self.parentModule = parentModule

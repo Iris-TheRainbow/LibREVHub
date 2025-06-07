@@ -220,10 +220,19 @@ class LynxPayload:
         return payloadMembers
 
 class LynxPacket:
-    """
-   |DEKAPlSaSaDsDsMnCmPa------>Ck|
-    0 1 2 3 4 5 6 7 8 9 A B C D E F
-   """
+    """Packet definition
+    0x44 (D)
+    0x4B (K)
+    PacketLength
+    PacketLength
+    Destination Module Address
+    Source Module Address
+    Message Number
+    Reference Number
+    Packet ID
+    Payload....
+    Checksum"""
+
     FrameIndex_Start = 0
     FrameIndex_End = FrameIndex_Start + 4
     HeaderIndex_Start = FrameIndex_End

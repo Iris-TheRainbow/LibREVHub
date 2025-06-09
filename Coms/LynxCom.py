@@ -47,36 +47,50 @@ class LynxCom:
         return comPorts
 
 
-    def recieveBlocking(self, queue: multiprocessing.Queue) -> list[str]:
+    def recieveBlocking(self, queue: multiprocessing.Queue) -> list[LynxMessage.LynxPacket]:
         byteList = []
         while self.serialProcessor.inWaiting:
             newByte = binascii.hexlify(self.serialProcessor.read(1)).upper()
             newByte = str(newByte)
             newByte = newByte[2:-1]
-        while len(byteList) > 2: 
-            dekaStart = byteList.index("44")
-            byteList[dekaStart:]
-            if (byteList[dekaStart + 1] == "4B"):
-                break
-            byteList.pop(0)
-        return byteList
+            byteList += newByte
+
+        headerStart = False
+        while not headerStart:
+            if byteList[0] == "44":
+                if byteList[1] == "4B":
+                    headerStart = True
+                else: 
+
+            
+        packets = []
+        packetLength = 0
+        while len(byteList) > 0:
+            lengthBytes = byteList[2] + byteList[3]
+            packetLength = int(int(lengthBytes, 16) >> 8 | int(lengthBytes, 16) % 256 << 8)
+
+        
+        return parseBytes(byteList)
+
+    def discovery() -> None:
+        discoveryPacket = LynxMessage.Discovery()
+        self.sendPacketBlocking(discoveryPacket, 255)
+        
 
     def parseBytes(self, bytes: list[str]) -> LynxMessage.LynxPacket:
         length = int(int(bytes[2] + bytes[3], 16) >> 8 | int(bytes[2] + bytes[3], 16) % 256 << 8)
         if length >= LynxConstants.PAYLOAD_MAX_SIZE: RuntimeError("Packet length excedes the maximum payload size")
 
-        if isValidChecksum(bytes[:-2], int(incomingPacket[-2:], 16)): 
-            packetFrameBytes = int(incomingPacket[LynxMessage.LynxPacket.FrameIndex_Start:LynxMessage.LynxPacket.FrameIndex_End], 16)
-            packetLength = int(self.swapEndianess(incomingPacket[LynxMessage.LynxPacket.LengthIndex_Start:LynxMessage.LynxPacket.LengthIndex_End]), 16)
-            packetDest = int(incomingPacket[LynxMessage.LynxPacket.DestinationIndex_Start:LynxMessage.LynxPacket.DestinationIndex_End], 16)
-            packetSrc = int(incomingPacket[LynxMessage.LynxPacket.SourceIndex_Start:LynxMessage.LynxPacket.SourceIndex_End], 16)
-            packetMessageNum = int(incomingPacket[LynxMessage.LynxPacket.MessageNumIndex_Start:LynxMessage.LynxPacket.MessageNumIndex_End], 16)
-            packetRefNum = int(incomingPacket[LynxMessage.LynxPacket.RefNumIndex_Start:LynxMessage.LynxPacket.RefNumIndex_End], 16)
-            packetCommandNum = int(self.swapEndianess(incomingPacket[LynxMessage.LynxPacket.PacketTypeIndex_Start:LynxMessage.LynxPacket.PacketTypeIndex_End]), 16)
-            packetPayload = incomingPacket[LynxMessage.LynxPacket.HeaderIndex_End:-2]
-            packetChkSum = int(incomingPacket[-2:], 16)
-            newPacket = LynxMessage.printDict[packetCommandNum]['Packet']()
-            newPacket.assignRawBytes(incomingPacket)
+        if isValidChecksum(bytes[:-2], int(bytes[-2:], 16)): 
+            packetLength = int(self.swapEndianess(bytes[LynxMessage.LynxPacket.LengthIndex_Start:LynxMessage.LynxPacket.LengthIndex_End]), 16)
+            packetDest = int(bytes[LynxMessage.LynxPacket.DestinationIndex_Start:LynxMessage.LynxPacket.DestinationIndex_End], 16)
+            packetSrc = int(bytes[LynxMessage.LynxPacket.SourceIndex_Start:LynxMessage.LynxPacket.SourceIndex_End], 16)
+            packetMessageNum = int(bytes[LynxMessage.LynxPacket.MessageNumIndex_Start:LynxMessage.LynxPacket.MessageNumIndex_End], 16)
+            packetRefNum = int(bytes[LynxMessage.LynxPacket.RefNumIndex_Start:LynxMessage.LynxPacket.RefNumIndex_End], 16)
+            packetCommandNum = int(self.swapEndianess(bytes[LynxMessage.LynxPacket.PacketTypeIndex_Start:LynxMessage.LynxPacket.PacketTypeIndex_End]), 16)
+            packetPayload = bytes[LynxMessage.LynxPacket.HeaderIndex_End:-2]
+            newPacket: LynxMessage.LynxPacket = LynxMessage.printDict[packetCommandNum]['Packet']()
+            newPacket.assignRawBytes(bytes)
             newPacket.header.length = packetLength
             newPacket.header.destination = packetDest
             newPacket.header.source = packetSrc
@@ -86,9 +100,9 @@ class LynxCom:
             bytePointer = 0
             for payloadMember in newPacket.payload.getOrderedMembers():
                 valueToAdd = LynxMessage.LynxBytes(len(payloadMember))
-                valueToAdd.data = int(self.swapEndianess(packetPayload[bytePointer:bytePointer + len(payloadMember) * 2]), 16)
+                valueToAdd.data = int(self.swapEndianess(packetPayload[0: len(payloadMember) * 2]), 16)
                 newPacket.payload.payloadMember = valueToAdd
-                bytePointer = bytePointer + len(payloadMember) * 2
+                bytePointer = len(payloadMember) * 2
 
         return newPacket
     
@@ -102,9 +116,10 @@ class LynxCom:
         if not isinstance(packet, LynxMessage.LynxPacket): RuntimeError("Attempted to send something other than a LynxPacket")
         attempts = 0;
         packet.header.destination = destinationModule
+        self.messageCount = (self.messageCount + 1)  % 256
+        if self.messageCount == 0: self.messageCount += 1
         while attempts < MAX_COM_ATTEMPTS:
                 packet.header.messageCount = self.messageCount
-                self.messageCount = (self.messageCount * 256) + 1
                 try:
                     self.serialProcessor.write(binascii.unhexlify(packet.getPacketData()))
 
@@ -112,7 +127,7 @@ class LynxCom:
                     attempts += 1
                     self.serialProcessor.close()
 
-    def isValidChecksum(self, incomingPacket: LynxCom.LynxPacket, receivedChkSum: int):
+    def isValidChecksum(self, incomingPacket: list[str], receivedChkSum: int):
         calcChkSum = 0
 
         for bytePointer in range(0, len(incomingPacket) - 2, 2):

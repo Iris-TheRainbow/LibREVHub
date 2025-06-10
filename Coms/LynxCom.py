@@ -11,6 +11,26 @@ import time
 MAX_COM_ATTEMPTS = 5
 MAX_BYTE_WAIT_TIME_SECONDS = .01
 MAX_RESPONSE_WAIT_TIME_SECONDS = 1
+MAX_PACKETS_WITHOUT_RESPONSE = 15
+MAX_PACKET_SEND_ATTEMPTS = 3
+MAX_PACKET_SEND_TIMEOUT_SECONDS = .02
+RESEND_PACKET_INTERVAL_SECONDS = .02
+
+class timeoutPacket:
+    def __init__(self, packet: LynxModule.LynxPacket):
+        self.packet = packet
+        self.startTime = time.time_ns()
+        self.timeOutTime = startTime + MAX_PACKET_SEND_TIMEOUT_SECONDS * (10**9)
+        self.attempts = 1
+
+    def reattempt(self):
+        self.attempts += 1
+
+    def atMaxAttempts(self) -> bool:
+        return attempts == MAX_PACKET_SEND_ATTEMPTS
+
+    def timedOut(self) ->  bool:
+        return time.time_ns > timeOutTime
 
 class comPort:
     def __init__(self, sn, name):
@@ -37,13 +57,12 @@ class LynxCom:
         self.sendingManager = multiprocessing.Manager()
         self.sentPackets = sendingManager.list()
         self.packetSendQueue = multiprocessing.Queue()
-        self.packetMessageNumberQueue = multiprocessing.Queue()
-        self.packetSendingProcess = multiprocessing.Process(target=self.sendPacketWorker, args=(packetSendQueue, sentPackets, packetMessageNumberQueue))
+        self.packetSendingProcess = multiprocessing.Process(target=self.sendPacketWorker, args=(self.packetSendQueue, self.sentPackets, self.packetMessageNumberQueue))
 
         self.receivingManager = multiprocessing.Manager()
         self.receivedPackets = receivingManager.list()
-        self.packetReceivingProcess = multiprocessing.Process(target=self.recievingWorker, args=(receivedPackets, sentPackets))
-
+        self.packetReceivingProcess = multiprocessing.Process(target=self.recievingWorker, args=(self.receivedPackets, self.sentPackets))
+        self.lastResendTime = None
         self.packetReceivingProcess.start()
         self.packetSendingProcess.start()
         
@@ -66,6 +85,18 @@ class LynxCom:
   
         return comPorts
 
+    def resendTimeouts(self) -> None: 
+        if self.lastResendTime == None: self.lastResendTime = time.time_ns()
+        if self.lastResendTime + RESEND_PACKET_INTERVAL_SECONDS*(10**9) < time.time_ns():
+            for i in rang(self.sentPackets):
+                packet = self.sendPacket[i]
+                if packet.timedOut():
+                    if not packet.atMaxAttempts():
+                        self.sendPacket(packet.packet, reattempt= True)
+                        packet.reattempt()
+                    else:
+                        self.sentPackets.pop(i)
+
     def safeReadBytes(self, numberOfBytes: int = 1):
         byteList = []
         start_time = 0
@@ -79,14 +110,15 @@ class LynxCom:
                     start_time = time.time()
                 elif time.time() - start_time > self.MAX_BYTE_WAIT_TIME_SECONDS:
                     break
-                time.sleep(0.0001)
+                time.sleep(.0001)
 
         if len(byteList) != numberOfBytes:
-            warnings.warn("attempted to read more bytes than were available to read")
+            RuntimeWarning
+            ("attempted to read more bytes than were available to read")
         return byteList
 
     def recievingWorker(self, recievingList: ListProxy[LynxMessage.LynxPacket], sentList: ListProxy[LynxMessage.LynxPacket]) -> None:
-        while true:
+        while True:
             byteList = []
             packetLength = 0
             if self.serialProcessor.in_waiting() > 0:
@@ -106,7 +138,7 @@ class LynxCom:
                         recievingList.append(packet)
                         
             else:
-                sleep(.001)
+                sleep(.0001)
 
     def getResponse(self, messageNumber: int) -> LynxMessage.LynxPacket:
         startTime = time.time_ns/(10**9)
@@ -117,37 +149,41 @@ class LynxCom:
                     return packet
             if time.time_ns/(10**9) > startTime + MAX_RESPONSE_WAIT_TIME_SECONDS:
                 break
-            sleep(.00001)
+            sleep(.0001)
 
-    def sendPacketWorker(self, packetQueue: multiprocessing.queues.Queue, packetMessageNumberQueue: multiprocessing.queues.Queue, packetList: ListProxy[LynxMessage.LynxPacket]) -> None:
+    def sendPacketWorker(self, packetQueue: multiprocessing.queues.Queue) -> None:
         while True:
-            if not packetQueue.empty():
-                PACKET = packetQueue.get()
-                if not isinstance(packet, LynxMessage.LynxPacket): RuntimeError("Attempted to send something other than a LynxPacket")
+            if not packetQueue.empty() and len(sentPackets < MAX_PACKETS_WITHOUT_RESPONSE):
+                packet = packetQueue.get()
+
+                if not isinstance(packet.packet, LynxMessage.LynxPacket): RuntimeError("Attempted to send something other than a LynxPacket")
                 attempts = 0;
-                self.messageCount = (self.messageCount + 1)  % 256
-                if self.messageCount == 0: self.messageCount += 1
-                packetMessageNumberQueue.put(self.messageCount)
-                packet.header.messageCount = self.messageCount
-                self.sentPackets.append(packet)
+
                 while attempts < MAX_COM_ATTEMPTS:
                         try:
-                            self.serialProcessor.write(binascii.unhexlify(packet.getPacketData()))
-
-                        except serial.SerialException as e:
+                            self.serialProcessor.write(binascii.unhexlify(packet.packet.getPacketData()))
+                        except:
                             attempts += 1
                             RuntimeWarning("Failed to write packet")
             else:
-                sleep(.001)
+                sleep(.0001)
 
-    def sendPacket(self, packet: LynxMessage.LynxPacket, destination: int) -> int:
+    def sendPacket(self, packet: LynxMessage.LynxPacket, destination: int = 0, reattempt: bool = False) -> int:
         packetToSend = packet
-        packetToSend.header.destination = destination
-        self.packetSendQueue.put(packetToSend)
-        while self.packetMessageNumberQueue.empty():
-            sleep(.00001)
-        return self.packetMessageNumberQueue.get()
-            
+        self.resendTimeouts()
+        if not reattempt:
+            packetToSend.header.destination = destination
+            self.__incrementMessageCount()
+            self.sentPackets.append(packet.packet)
+            packetToSend.header.msgNum = self.messageCount
+
+        return messageCount
+    
+    def __incrementMessageCount(self) -> int:
+        self.messageCount = (self.messageCount + 1)  % 256
+        if self.messageCount == 0: self.messageCount += 1
+        return self.messageCount
+
     def discovery(self) -> None:
         discoveryPacket = LynxMessage.Discovery()
         self.sendPacketInstant(discoveryPacket, 255)

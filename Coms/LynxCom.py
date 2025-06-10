@@ -6,8 +6,10 @@ import LynxMessage
 from .. import LynxDevices
 from ..Hardware import LynxModule
 import binascii
+import time
 
-MAX_COM_ATTEMPTS = 5;
+MAX_COM_ATTEMPTS = 5
+MAX_BYTE_WAIT_TIME_SECONDS = .01
 class comPort:
     def __init__(self, sn, name):
         self.sn = sn
@@ -29,7 +31,12 @@ class LynxCom:
         self.messageCount = 1;
         self.serialProcessor = serial.Serial(baudrate=460800, bytesize=serial.EIGHTBITS, parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE)
         self.comLock = false
-        self.sentPackets: list[LynxMessage.LynxPacket] = []
+
+        self.sendingManager = multiprocessing.Manager()
+        self.sentPackets = sendingManager.list()
+
+        self.receivingManager = multiprocessing.Manager()
+        self.receivedPackets = receivingManager.list()
 
     def setActivePort(self, port: str) -> None:
         self.serialProcessor.setPort(port)
@@ -48,44 +55,40 @@ class LynxCom:
                             comPorts.append(comPort(serialNumber, usbDevice.device))          
   
         return comPorts
-
-
-    def recieveBlocking(self) -> list[LynxMessage.LynxPacket]:
+    def safeReadBytes(self, numberOfBytes: int = 1):
         byteList = []
-        while self.serialProcessor.inWaiting:
-            byteList += str(binascii.hexlify(self.serialProcessor.read(1)).upper())[2:-1]
-
-        headerStart = False
-        while not headerStart:
-            if byteList[0] == "44":
-                if byteList[1] == "4B":
-                    headerStart = True
-                else:
-                    byteList = byteList[2:]
-            else: 
-                byteList.pop(0)
-            
-        bytePackets = []
-        packetLength = 0
-        while len(byteList) > 0:
-            if byteList[0] + byteList[1]:
-                lengthBytes = byteList[2] + byteList[3]
-                packetLength = (int(int(lengthBytes, 16) >> 8 | int(lengthBytes, 16) % 256 << 8))*2
-                if packetLength >= LynxConstants.PAYLOAD_MAX_SIZE: RuntimeWarning("Packet length excedes the maximum payload size")
-                packets.append(byteList[:packetLength])
-            else:
-                RuntimeWarning("the length bytes don't point to a new packet")
+        bytesLeft = numberOfBytes
+        timeout = false
+        while len(byteList) < numberOfBytes:
+            if self.serialProcessor.in_waiting() > 1:
+                byteList.append(str(binascii.hexlify(self.serialProcessor.read(1)).upper())[2:-1])
+            elif timeout: 
                 break
-        packets = []
-        for bytePacket in bytePackets:
-            newPacket = parseBytes(bytePacket)
-        
-        for packet in packets:
-            if not self.checkMsgNumber(packet):
-                RuntimeWarning("Recieved packet with a message number that doesnt have a matching packet sent")
-        
-        return packets
+        if not len(byteList) == numberOfBytes:
+            RuntimeWarning("attempted to read more bytes than were available to read")
+        return byteList
 
+    def recievingWorker(self, recievingList: ListProxy[LynxMessage.LynxPacket]) -> None:
+        while true:
+            byteList = []
+            fullPacket = False
+            packetLength = 0
+
+            if self.serialProcessor.in_waiting() > 0:
+                if safeReadBytes() == "44":
+                    if safeReadBytes() == "4B":
+                        byteList = ["44", "4B"] + safeReadBytes(2)
+                        lengthBytes = byteList[2] + byteList[3]
+                        packetLength = (int(int(lengthBytes, 16) >> 8 | int(lengthBytes, 16) % 256 << 8))*2
+
+                    if self.serialProcessor.in_waiting() > packetLength - 4:
+                        byteList += safeReadBytes(packetLength - 4)
+                        fullPacket = True
+                        recievingList.append(self.parseBytes(bytePacket))
+            else:
+                sleep(.001)
+            
+            
     def discovery(self) -> None:
         discoveryPacket = LynxMessage.Discovery()
         self.sendPacketBlocking(discoveryPacket, 255)

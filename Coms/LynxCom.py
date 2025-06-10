@@ -3,6 +3,8 @@ from serial.tools import list_ports
 import multiprocessing
 import LynxConstants
 import LynxMessage
+from .. import LynxDevices
+from ..Hardware import LynxModule
 import binascii
 
 MAX_COM_ATTEMPTS = 5;
@@ -23,10 +25,11 @@ class LynxCom:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self) ->  LynxCom:
+    def __init__(self):
         self.messageCount = 1;
         self.serialProcessor = serial.Serial(baudrate=460800, bytesize=serial.EIGHTBITS, parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE)
         self.comLock = false
+        self.sentPackets: list[LynxMessage.LynxPacket] = []
 
     def setActivePort(self, port: str) -> None:
         self.serialProcessor.setPort(port)
@@ -47,40 +50,56 @@ class LynxCom:
         return comPorts
 
 
-    def recieveBlocking(self, queue: multiprocessing.Queue) -> list[LynxMessage.LynxPacket]:
+    def recieveBlocking(self) -> list[LynxMessage.LynxPacket]:
         byteList = []
         while self.serialProcessor.inWaiting:
-            newByte = binascii.hexlify(self.serialProcessor.read(1)).upper()
-            newByte = str(newByte)
-            newByte = newByte[2:-1]
-            byteList += newByte
+            byteList += str(binascii.hexlify(self.serialProcessor.read(1)).upper())[2:-1]
 
         headerStart = False
         while not headerStart:
             if byteList[0] == "44":
                 if byteList[1] == "4B":
                     headerStart = True
-                else: 
-
+                else:
+                    byteList = byteList[2:]
+            else: 
+                byteList.pop(0)
             
-        packets = []
+        bytePackets = []
         packetLength = 0
         while len(byteList) > 0:
-            lengthBytes = byteList[2] + byteList[3]
-            packetLength = int(int(lengthBytes, 16) >> 8 | int(lengthBytes, 16) % 256 << 8)
-
+            if byteList[0] + byteList[1]:
+                lengthBytes = byteList[2] + byteList[3]
+                packetLength = (int(int(lengthBytes, 16) >> 8 | int(lengthBytes, 16) % 256 << 8))*2
+                if packetLength >= LynxConstants.PAYLOAD_MAX_SIZE: RuntimeWarning("Packet length excedes the maximum payload size")
+                packets.append(byteList[:packetLength])
+            else:
+                RuntimeWarning("the length bytes don't point to a new packet")
+                break
+        packets = []
+        for bytePacket in bytePackets:
+            newPacket = parseBytes(bytePacket)
         
-        return parseBytes(byteList)
+        for packet in packets:
+            if not self.checkMsgNumber(packet):
+                RuntimeWarning("Recieved packet with a message number that doesnt have a matching packet sent")
+        
+        return packets
 
-    def discovery() -> None:
+    def discovery(self) -> None:
         discoveryPacket = LynxMessage.Discovery()
         self.sendPacketBlocking(discoveryPacket, 255)
-        
+        for packet in self.recieveBlocking():
+            LynxDevices.LynxModes.append(LynxModule(self, packet.header.source, packet.payload.parent))
+    
+    def checkMsgNumber(self, incomingPacket: LynxMessage.LynxPacket) -> bool:
+        for i in range(self.sentPackets):
+            if packet.header.msgNum == incomingPacket.header.msgNum:
+                self.sentPackets.pop(i)
+                return True
+        return False
 
     def parseBytes(self, bytes: list[str]) -> LynxMessage.LynxPacket:
-        length = int(int(bytes[2] + bytes[3], 16) >> 8 | int(bytes[2] + bytes[3], 16) % 256 << 8)
-        if length >= LynxConstants.PAYLOAD_MAX_SIZE: RuntimeError("Packet length excedes the maximum payload size")
-
         if isValidChecksum(bytes[:-2], int(bytes[-2:], 16)): 
             packetLength = int(self.swapEndianess(bytes[LynxMessage.LynxPacket.LengthIndex_Start:LynxMessage.LynxPacket.LengthIndex_End]), 16)
             packetDest = int(bytes[LynxMessage.LynxPacket.DestinationIndex_Start:LynxMessage.LynxPacket.DestinationIndex_End], 16)
@@ -105,12 +124,6 @@ class LynxCom:
                 bytePointer = len(payloadMember) * 2
 
         return newPacket
-    
-    def recieveAsync(self) -> tuple[multiprocessing.Process, multiprocessing.Queue]:
-        queue = multiprocessing.Queue
-        process = multiprocessing.Process(target=self.recieveBlocking, args=(queue,))
-        process.start()
-        return (process, queue)
 
     def sendPacketBlocking(self, packet: LynxMessage.LynxPacket, destinationModule: int) -> None:
         if not isinstance(packet, LynxMessage.LynxPacket): RuntimeError("Attempted to send something other than a LynxPacket")
@@ -118,14 +131,15 @@ class LynxCom:
         packet.header.destination = destinationModule
         self.messageCount = (self.messageCount + 1)  % 256
         if self.messageCount == 0: self.messageCount += 1
+        packet.header.messageCount = self.messageCount
+        self.sentPackets.append(packet)
         while attempts < MAX_COM_ATTEMPTS:
-                packet.header.messageCount = self.messageCount
                 try:
                     self.serialProcessor.write(binascii.unhexlify(packet.getPacketData()))
 
                 except serial.SerialException as e:
                     attempts += 1
-                    self.serialProcessor.close()
+                    RuntimeWarning("Failed to write packet")
 
     def isValidChecksum(self, incomingPacket: list[str], receivedChkSum: int):
         calcChkSum = 0
@@ -135,10 +149,3 @@ class LynxCom:
             calcChkSum %= 256
 
         return receivedChkSum == calcChkSum
-
-    def discoverBlocking(self) -> none:
-        self.discovered = LynxMessage.Discovery()
-
-        pass
-
-CommObj: LynxCom = LynxCom();
